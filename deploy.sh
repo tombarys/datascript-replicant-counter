@@ -25,12 +25,14 @@ echo "✅ Backend built"
 
 # 3. Deploy Frontend
 echo "🌐 Deploying frontend..."
+cd ../frontend
 scp public/js/main.js "$SERVER:$FRONTEND_DIR/js/"
 scp public/index.html "$SERVER:$FRONTEND_DIR/"
 echo "✅ Frontend deployed"
 
 # 4. Deploy Backend
 echo "🖥️  Deploying backend..."
+cd ../backend
 ssh "$SERVER" "mkdir -p $BACKEND_DIR"
 scp counter-app.jar "$SERVER:$BACKEND_DIR/"
 scp src/counter/core.clj "$SERVER:$BACKEND_DIR/src/counter/"
