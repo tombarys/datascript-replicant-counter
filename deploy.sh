@@ -13,7 +13,6 @@ echo "===================================="
 # 1. Build Frontend
 echo "📦 Building frontend..."
 cd frontend
-export JAVA_HOME=$(/usr/libexec/java_home -v 21)
 npm run build
 echo "✅ Frontend built"
 
@@ -41,7 +40,7 @@ echo "✅ Backend deployed"
 
 # 5. Restart Backend
 echo "🔄 Restarting backend service..."
-ssh "$SERVER" "pkill -f counter-app.jar; sleep 2; nohup java -jar $BACKEND_DIR/counter-app.jar > $BACKEND_DIR/logs/app.log 2>&1 &"
+ssh "$SERVER" "systemctl restart counter-app"
 echo "✅ Backend restarted"
 
 echo ""

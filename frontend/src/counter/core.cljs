@@ -6,11 +6,6 @@
 (def schema {:counter/id {:db/unique :db.unique/identity}})
 (defonce conn (d/create-conn schema))
 
-(defonce init-db
-  (d/transact! conn [{:counter/id :main-counter
-                      :counter/value 0
-                      :counter/loading false}]))
-
 (defn set-loading! [loading]
   (d/transact! conn [{:counter/id :main-counter :counter/loading loading}]))
 
@@ -66,7 +61,7 @@
   (let [result (query-counter db)
         [value loading] (first result)]
     [:div.counter
-     [:h2 "DataScript Counter"]
+     [:h2 "DataScriptový čítač"]
      [:div.counter-value (if loading "..." value)]
      [:div.counter-controls
       [:button {:on {:click [:decrement]} :disabled loading} "-"]
@@ -75,7 +70,7 @@
 
 (defn render-app [db]
   [:div
-   [:h1 "Counter Application"]
+   [:h1 "Inkrementátor"]
    [:p {:style {:color "#666"}} "Frontend: Replicant + DataScript"]
    (render-counter db)])
 
