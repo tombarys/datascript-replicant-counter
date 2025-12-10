@@ -61,7 +61,7 @@
   (let [result (query-counter db)
         [value loading] (first result)]
     [:div.counter
-     [:h2 "DataScriptový čítač"]
+     [:h2 "DataScript rules"]
      [:div.counter-value (if loading "..." value)]
      [:div.counter-controls
       [:button {:on {:click [:decrement]} :disabled loading} "-"]
@@ -70,7 +70,7 @@
 
 (defn render-app [db]
   [:div
-   [:h1 "Inkrementátor"]
+   [:h1 "📮 Inkrementátor"]
    [:p {:style {:color "#666"}} "Frontend: Replicant + DataScript"]
    (render-counter db)])
 

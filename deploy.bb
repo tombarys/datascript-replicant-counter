@@ -2,17 +2,16 @@
 ;; Deploy script for DataScript Counter App
 ;; Usage: bb deploy.bb
 
-(require '[babashka.process :as p]
-         '[babashka.fs :as fs]
-         '[clojure.string :as str])
+(require '[babashka.process :as p])
 
 (def config
   {:server "root@91.98.234.203"
    :backend-dir "/opt/counter-app"
    :frontend-dir "/var/www/counter-app"})
 
-(defn run! [cmd & {:keys [dir] :or {dir "."}}]
+(defn run! 
   "Run command and throw on error"
+  [cmd & {:keys [dir] :or {dir "."}}]
   (let [result (p/shell {:dir dir :continue true} cmd)]
     (when-not (zero? (:exit result))
       (throw (ex-info (str "Command failed: " cmd) result)))
@@ -24,12 +23,14 @@
 (defn success [msg]
   (println (str "✅ " msg)))
 
-(defn ssh [cmd]
+(defn ssh 
   "Execute command on remote server"
+  [cmd]
   (run! (str "ssh " (:server config) " '" cmd "'")))
 
-(defn scp [local remote]
+(defn scp 
   "Copy file to remote server"
+  [local remote]
   (run! (str "scp " local " " (:server config) ":" remote)))
 
 (defn deploy! []
