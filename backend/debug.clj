@@ -6,26 +6,30 @@
 
 (def db-config {:store {:backend :file :path "/opt/counter-app/data/datahike-db"}})
 
-(defn db []
+(defn db 
   "Vrátí aktuální snapshot databáze"
+  []
   (d/db (d/connect db-config)))
 
-(defn all-datoms []
+(defn all-datoms 
   "Vrátí všechny datomy v databázi"
+  []
   (d/q '[:find ?e ?a ?v
          :where [?e ?a ?v]]
        (db)))
 
-(defn query-counter []
+(defn query-counter 
   "Dotaz na counter entity"
+  []
   (d/q '[:find ?e ?id ?value
          :where 
          [?e :counter/id ?id]
          [?e :counter/value ?value]]
        (db)))
 
-(defn schema []
+(defn schema 
   "Vrátí schema atributy"
+  []
   (d/q '[:find ?ident ?valueType ?cardinality ?unique
          :where 
          [?e :db/ident ?ident]
@@ -34,25 +38,29 @@
          [(get-else $ ?e :db/unique :none) ?unique]]
        (db)))
 
-(defn entity [eid]
+(defn entity 
   "Vrátí celou entitu podle entity ID"
+  [eid]
   (d/pull (db) '[*] eid))
 
-(defn reset-counter! []
+(defn reset-counter! 
   "Reset counteru na 0"
+  []
   (let [conn (d/connect db-config)]
     (d/transact conn [{:counter/id :main-counter :counter/value 0}])
     (println "Counter reset to 0")))
 
-(defn set-counter! [value]
+(defn set-counter! 
   "Nastaví counter na konkrétní hodnotu"
+  [value]
   (let [conn (d/connect db-config)]
     (d/transact conn [{:counter/id :main-counter :counter/value value}])
     (println "Counter set to" value)))
 
 ;; Helper funkce pro výpis
-(defn pp [data]
+(defn pp 
   "Pretty print"
+  [data]
   (clojure.pprint/pprint data))
 
 ;; Automaticky vytiskni základní info

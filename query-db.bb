@@ -15,14 +15,16 @@
    :server "root@91.98.234.203"
    :backend-dir "/opt/counter-app"})
 
-(defn api-get [path]
+(defn api-get 
   "GET request, parse EDN response"
+  [path]
   (-> (http/get (str (:api config) path))
       :body
       edn/read-string))
 
-(defn api-post [path data]
+(defn api-post 
   "POST request with EDN data"
+  [path data]
   (-> (http/post (str (:api config) path)
                  {:body (pr-str data)
                   :headers {"Content-Type" "application/edn"}})
