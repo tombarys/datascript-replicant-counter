@@ -1,0 +1,34 @@
+# Frontend
+frontend/node_modules/
+frontend/.shadow-cljs/
+frontend/public/js/
+frontend/.clj-kondo/
+frontend/.lsp/
+
+# Backend  
+backend/target/
+backend/.cpcache/
+backend/data/
+backend/logs/
+backend/*.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+*.swp
+*.swo
+
+# Build artifacts
+*.class
+*.log
+
+# HTML renders (Quarto/Markdown)
+*.html
+*_files/
+
+# Helper scripts (temporary)
+GET_CORRECT_FRONTEND.sh

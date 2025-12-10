@@ -1,0 +1,20 @@
+{:paths ["src" "resources"]
+ :deps {org.clojure/clojure {:mvn/version "1.11.1"}
+        ring/ring-core {:mvn/version "1.9.6"}
+        ring/ring-jetty-adapter {:mvn/version "1.9.6"}
+        ring/ring-defaults {:mvn/version "0.3.4"}
+        metosin/reitit {:mvn/version "0.5.18"}
+        metosin/muuntaja {:mvn/version "0.6.8"}
+        io.replikativ/datahike {:mvn/version "0.6.1610"}
+        org.clojure/tools.logging {:mvn/version "1.2.4"}
+        ch.qos.logback/logback-classic {:mvn/version "1.4.11"}}
+
+ :mvn/repos {"clojars" {:url "https://repo.clojars.org/"}} ; Přidání Clojars repozitáře
+
+ :aliases
+ {:run {:main-opts ["-m" "counter.core"]}
+  :uberjar {:replace-deps {com.github.seancorfield/depstar {:mvn/version "2.1.303"}}
+            :exec-fn hf.depstar/uberjar
+            :exec-args {:aot true
+                        :jar "counter-app.jar"
+                        :main-class "counter.core"}}}}
