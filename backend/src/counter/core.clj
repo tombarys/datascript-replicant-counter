@@ -3,9 +3,7 @@
             [reitit.ring :as ring]
             [ring.middleware.defaults :refer [wrap-defaults api-defaults]]
             [clojure.tools.logging :as log]
-            [clojure.core.async :as async]
             [datahike.api :as d])
-  (:import [java.io OutputStreamWriter])
   (:gen-class))
 
 ;; Konfigurace Datahike - perzistentní datalog databáze na disku
@@ -30,12 +28,6 @@
 
 ;; Globální Datahike connection atom
 (def conn-atom (atom nil))
-
-;; SSE broadcast channel pro real-time updates (aktuálně nepoužíváno - polling fallback)
-(defonce broadcast-chan (async/chan (async/sliding-buffer 100)))
-
-;; Set připojených SSE klientů
-(defonce sse-clients (atom #{}))
 
 (defn edn-response 
   "Helper pro vytvoření HTTP response s EDN obsahem a CORS headers."
@@ -115,62 +107,6 @@
     (d/transact @conn-atom [{:counter/id :main-counter :counter/value value}])
     (edn-response {:success true :new-value value :datoms (get-counter-datoms)})))
 
-(defn sse-handler 
-  "SSE (Server-Sent Events) endpoint - GET /api/events
-   Vytvoří streaming connection pro real-time updates.
-   Aktuálně nefunkční s Jetty - používá se polling fallback na frontendu."
-  [request]
-  (let [client-chan (async/chan 10)
-        out (java.io.PipedOutputStream.)
-        in (java.io.PipedInputStream. out)
-        writer (java.io.OutputStreamWriter. out "UTF-8")]
-    (swap! sse-clients conj client-chan)
-    (log/info "SSE client connected. Total clients:" (count @sse-clients))
-    (async/thread
-      (try
-        (while true
-          (when-let [event (async/<!! client-chan)]
-            (.write writer (str "data: " (pr-str event) "\n\n"))
-            (.flush writer)))
-        (catch Exception e
-          (log/warn "SSE write error:" (.getMessage e))
-          (swap! sse-clients disj client-chan)
-          (async/close! client-chan)
-          (.close writer))))
-    {:status 200
-     :headers {"Content-Type" "text/event-stream;charset=UTF-8"
-               "Cache-Control" "no-cache, no-store, must-revalidate"
-               "Connection" "keep-alive"
-               "X-Accel-Buffering" "no"
-               "Access-Control-Allow-Origin" "*"}
-     :body in}))
-
-(defn broadcast! 
-  "Broadcastuje event všem připojeným SSE klientům.
-   Aktuálně nepoužíváno - SSE nefunguje správně s Jetty."
-  [event]
-  (log/debug "Broadcasting to" (count @sse-clients) "clients:" event)
-  (doseq [client @sse-clients]
-    (async/put! client event)))
-
-(defn setup-tx-listener! 
-  "Nastaví Datahike transaction listener.
-   Při každé změně counter hodnoty broadcastuje update všem SSE klientům.
-   Aktuálně nepoužíváno kvůli SSE problémům s Jetty."
-  [conn]
-  (d/listen conn :sse-broadcast
-    (fn [tx-report]
-      (let [tx-data (:tx-data tx-report)
-            counter-changes (filter #(= :counter/value (:a %)) tx-data)]
-        (when (seq counter-changes)
-          (let [new-value (:v (first counter-changes))
-                datoms (get-counter-datoms)]
-            (log/info "Counter changed to:" new-value)
-            (broadcast! {:type :counter-update
-                        :value new-value
-                        :datoms datoms
-                        :timestamp (System/currentTimeMillis)})))))))
-
 ;; Reitit router - definuje API endpointy
 (def app-routes
   (ring/router
@@ -178,7 +114,6 @@
     ["/counter" {:get get-counter
                  :post update-counter
                  :options options-handler}]
-    ["/events" {:get sse-handler}]
     ["/debug" {:get debug-all}]
     ["/debug/set" {:post debug-set
                    :options options-handler}]]))
@@ -189,16 +124,14 @@
 
 (defn -main 
   "Hlavní vstupní bod aplikace.
-   Inicializuje DB, připojí se, nastaví listenery a spustí Jetty server na portu 3000."
+   Inicializuje DB, připojí se a spustí Jetty server na portu 3000."
   []
   (log/info "Initializing Datahike database...")
   (init-db!)
   (log/info "Connecting to Datahike database...")
   (reset! conn-atom (d/connect db-config))
-  (log/info "Setting up transaction listener for SSE...")
-  (setup-tx-listener! @conn-atom)
   (log/info "Starting Counter App Server on port 3000")
   (jetty/run-jetty (wrap-defaults app api-defaults) 
                    {:port 3000 
                     :join? false})
-  (log/info "Server started successfully with SSE support"))
+  (log/info "Server started successfully"))
