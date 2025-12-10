@@ -3,7 +3,9 @@
             [reitit.ring :as ring]
             [ring.middleware.defaults :refer [wrap-defaults api-defaults]]
             [clojure.tools.logging :as log]
+            [clojure.core.async :as async]
             [datahike.api :as d])
+  (:import [java.io OutputStreamWriter])
   (:gen-class))
 
 ;; Konfigurace Datahike
@@ -26,6 +28,12 @@
 
 ;; Connection atom
 (def conn-atom (atom nil))
+
+;; SSE broadcast channel
+(defonce broadcast-chan (async/chan (async/sliding-buffer 100)))
+
+;; SSE clients
+(defonce sse-clients (atom #{}))
 
 ;; EDN response helper
 (defn edn-response [data]
@@ -93,6 +101,58 @@
     (d/transact @conn-atom [{:counter/id :main-counter :counter/value value}])
     (edn-response {:success true :new-value value :datoms (get-counter-datoms)})))
 
+;; SSE Handler with piped output stream
+(defn sse-handler [request]
+  (let [client-chan (async/chan 10)
+        out (java.io.PipedOutputStream.)
+        in (java.io.PipedInputStream. out)
+        writer (java.io.OutputStreamWriter. out "UTF-8")]
+    
+    (swap! sse-clients conj client-chan)
+    (log/info "SSE client connected. Total clients:" (count @sse-clients))
+    
+    ;; Background thread to write events
+    (async/thread
+      (try
+        (while true
+          (when-let [event (async/<!! client-chan)]
+            (.write writer (str "data: " (pr-str event) "\n\n"))
+            (.flush writer)))
+        (catch Exception e
+          (log/warn "SSE write error:" (.getMessage e))
+          (swap! sse-clients disj client-chan)
+          (async/close! client-chan)
+          (.close writer))))
+    
+    {:status 200
+     :headers {"Content-Type" "text/event-stream;charset=UTF-8"
+               "Cache-Control" "no-cache, no-store, must-revalidate"
+               "Connection" "keep-alive"
+               "X-Accel-Buffering" "no"
+               "Access-Control-Allow-Origin" "*"}
+     :body in}))
+
+;; Broadcast to all SSE clients
+(defn broadcast! [event]
+  (log/debug "Broadcasting to" (count @sse-clients) "clients:" event)
+  (doseq [client @sse-clients]
+    (async/put! client event)))
+
+;; Setup transaction listener
+(defn setup-tx-listener! [conn]
+  (d/listen conn :sse-broadcast
+    (fn [tx-report]
+      (let [tx-data (:tx-data tx-report)
+            counter-changes (filter #(= :counter/value (:a %)) tx-data)]
+        (when (seq counter-changes)
+          (let [new-value (:v (first counter-changes))
+                datoms (get-counter-datoms)]
+            (log/info "Counter changed to:" new-value)
+            (broadcast! {:type :counter-update
+                        :value new-value
+                        :datoms datoms
+                        :timestamp (System/currentTimeMillis)})))))))
+
 ;; Router
 (def app-routes
   (ring/router
@@ -100,6 +160,7 @@
     ["/counter" {:get get-counter
                  :post update-counter
                  :options options-handler}]
+    ["/events" {:get sse-handler}]
     ["/debug" {:get debug-all}]
     ["/debug/set" {:post debug-set
                    :options options-handler}]]))
@@ -116,9 +177,12 @@
   (log/info "Connecting to Datahike database...")
   (reset! conn-atom (d/connect db-config))
   
+  (log/info "Setting up transaction listener for SSE...")
+  (setup-tx-listener! @conn-atom)
+  
   (log/info "Starting Counter App Server on port 3000")
   (jetty/run-jetty (wrap-defaults app api-defaults) 
                    {:port 3000 
                     :join? false})
   
-  (log/info "Server started successfully"))
+  (log/info "Server started successfully with SSE support"))

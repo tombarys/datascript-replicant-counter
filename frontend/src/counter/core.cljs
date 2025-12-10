@@ -39,6 +39,31 @@
                  (set-loading! false))))
       (.catch #(do (js/console.error "Update error:" %) (set-loading! false)))))
 
+;; Polling jako fallback (jednodušší a spolehlivější než SSE s Jetty)
+(defonce poll-interval (atom nil))
+
+(defn start-polling! []
+  (when @poll-interval
+    (js/clearInterval @poll-interval))
+  
+  (js/console.log "🔄 Starting polling (5s interval)...")
+  (reset! poll-interval
+    (js/setInterval
+      (fn []
+        (-> (js/fetch "/api/counter")
+            (.then #(.text %))
+            (.then (fn [edn-str]
+                     (let [data (cljs.reader/read-string edn-str)
+                           datoms (:datoms data)]
+                       (sync-datoms! datoms))))
+            (.catch #(js/console.error "Poll error:" %))))
+      5000))) ;; Poll každých 5s
+
+(defn stop-polling! []
+  (when @poll-interval
+    (js/clearInterval @poll-interval)
+    (reset! poll-interval nil)))
+
 (r/set-dispatch!
  (fn [event-data handler-data]
    (when (= :replicant.trigger/dom-event (:replicant/trigger event-data))
@@ -71,7 +96,7 @@
 (defn render-app [db]
   [:div
    [:h1 "📮 Inkrementátor"]
-   [:p {:style {:color "#666"}} "Frontend: Replicant + DataScript"]
+   [:p {:style {:color "#666"}} "Frontend: Replicant + DataScript + Auto-sync 🔄"]
    (render-counter db)])
 
 (defonce renderer (atom nil))
@@ -83,6 +108,20 @@
 (d/listen! conn :render (fn [_] (render!)))
 
 (defn ^:export init []
-  (js/console.log "Counter app with Replicant + DataScript")
+  (js/console.log "🚀 Counter app with Replicant + DataScript + Auto-sync")
   (fetch-counter!)
+  (start-polling!)
+  (render!))
+
+;; Cleanup při unmount/reload
+(defn ^:export stop []
+  (js/console.log "🛑 Stopping auto-sync")
+  (stop-polling!))
+
+;; Hot reload support
+(defn ^:dev/before-load stop-before-reload []
+  (stop-polling!))
+
+(defn ^:dev/after-load start-after-reload []
+  (start-polling!)
   (render!))
