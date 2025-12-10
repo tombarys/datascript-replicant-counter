@@ -32,3 +32,5 @@ backend/*.jar
 
 # Helper scripts (temporary)
 GET_CORRECT_FRONTEND.sh
+
+.clj-kondo/
