@@ -80,13 +80,29 @@
              "Access-Control-Allow-Methods" "GET, POST, OPTIONS"
              "Access-Control-Allow-Headers" "Content-Type"}})
 
+;; Debug endpoints
+(defn debug-all [_]
+  (let [db (d/db @conn-atom)]
+    (edn-response {:all-datoms (d/q '[:find ?e ?a ?v :where [?e ?a ?v]] db)
+                   :counter (d/pull db '[*] [:counter/id :main-counter])
+                   :schema (d/q '[:find ?ident :where [?e :db/ident ?ident]] db)})))
+
+(defn debug-set [request]
+  (let [body (slurp (:body request))
+        value (read-string body)]
+    (d/transact @conn-atom [{:counter/id :main-counter :counter/value value}])
+    (edn-response {:success true :new-value value :datoms (get-counter-datoms)})))
+
 ;; Router
 (def app-routes
   (ring/router
    ["/api"
     ["/counter" {:get get-counter
                  :post update-counter
-                 :options options-handler}]]))
+                 :options options-handler}]
+    ["/debug" {:get debug-all}]
+    ["/debug/set" {:post debug-set
+                   :options options-handler}]]))
 
 ;; Ring aplikace
 (def app
