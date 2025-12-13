@@ -8,10 +8,10 @@
   (:import [java.io OutputStreamWriter])
   (:gen-class))
 
-;; Konfigurace Datalevin - jen cesta k databázi
+;; Konfigurace Datalevin - jen cesta k databázi.
 (def db-path "/opt/counter-app/data/datalevin-db")
 
-;; Schema pro Datalevin (mapa map)
+;; Schema pro Datalevin (mapa map).
 (def schema
   {:counter/id {:db/valueType :db.type/keyword
                 :db/unique :db.unique/identity
@@ -19,8 +19,10 @@
    :counter/value {:db/valueType :db.type/long
                    :db/cardinality :db.cardinality/one}})
 
-;; Inicializace databáze
-(defn init-db! []
+(defn init-db!
+  "Inicializuje Datalevin DB a vrátí connection.
+   Pokud neexistuje entita :main-counter, vytvoří ji s hodnotou 0."
+  []
   ;; get-conn vytvoří databázi automaticky, pokud neexistuje
   (let [conn (d/get-conn db-path schema)]
     ;; Zkontroluj, jestli už existuje counter, pokud ne, vytvoř ho
@@ -34,17 +36,18 @@
         (log/info "Initialized counter with value 0")))
     conn))
 
-;; Connection atom
+;; Connection atom - drží Datalevin connection po startu aplikace.
 (def conn-atom (atom nil))
 
-;; SSE broadcast channel
+;; SSE broadcast channel (aktuálně nepoužitý; broadcast jde přímo do client chanů).
 (defonce broadcast-chan (async/chan (async/sliding-buffer 100)))
 
-;; SSE clients
+;; SSE clients - množina core.async kanálů pro jednotlivé připojené klienty.
 (defonce sse-clients (atom #{}))
 
-;; EDN response helper
-(defn edn-response [data]
+(defn edn-response
+  "Vytvoří Ring response s EDN tělem a základními CORS hlavičkami."
+  [data]
   {:status 200
    :headers {"Content-Type" "application/edn"
              "Access-Control-Allow-Origin" "*"
@@ -52,8 +55,10 @@
              "Access-Control-Allow-Headers" "Content-Type"}
    :body (pr-str data)})
 
-;; Získej entitu jako datomy
-(defn get-counter-datoms []
+(defn get-counter-datoms
+  "Vrátí všechny datomy (v podobě [attr value]) pro entitu :main-counter.
+   Pokud entita neexistuje, vrací nil."
+  []
   (let [db (d/db @conn-atom)
         eid (d/q '[:find ?e .
                    :where [?e :counter/id :main-counter]]
@@ -65,10 +70,15 @@
            db eid))))
 
 ;; API Handlers - vrací EDN
-(defn get-counter [_]
+(defn get-counter
+  "GET /api/counter - vrátí aktuální stav counteru jako EDN (datomy)."
+  [_]
   (edn-response {:datoms (get-counter-datoms)}))
 
-(defn update-counter [request]
+(defn update-counter
+  "POST /api/counter - přijme EDN keyword operaci (:increment/:decrement/:reset),
+   provede transakci a vrátí nové datomy."
+  [request]
   (let [body (slurp (:body request))
         operation (read-string body)
         db (d/db @conn-atom)
@@ -90,31 +100,40 @@
     (edn-response {:datoms (get-counter-datoms)})))
 
 ;; CORS preflight
-(defn options-handler [_]
+(defn options-handler
+  "OPTIONS handler pro CORS preflight."
+  [_]
   {:status 200
    :headers {"Access-Control-Allow-Origin" "*"
              "Access-Control-Allow-Methods" "GET, POST, OPTIONS"
              "Access-Control-Allow-Headers" "Content-Type"}})
 
 ;; Debug endpoints
-(defn debug-all [_]
+(defn debug-all
+  "GET /api/debug - vrátí diagnostická data (všechny datomy, counter, schema)."
+  [_]
   (let [db (d/db @conn-atom)]
     (edn-response {:all-datoms (d/q '[:find ?e ?a ?v :where [?e ?a ?v]] db)
                    :counter (d/pull db '[*] [:counter/id :main-counter])
                    :schema (d/q '[:find ?ident :where [?e :db/ident ?ident]] db)})))
 
-(defn debug-set [request]
+(defn debug-set
+  "POST /api/debug/set - nastaví counter na dodanou hodnotu (EDN číslo)."
+  [request]
   (let [body (slurp (:body request))
         value (read-string body)]
     (d/transact! @conn-atom [{:counter/id :main-counter :counter/value value}])
     (edn-response {:success true :new-value value :datoms (get-counter-datoms)})))
 
 ;; SSE Handler with piped output stream
-(defn sse-handler [request]
+(defn sse-handler
+  "GET /api/events - Server-Sent Events stream. Pro každého klienta vytvoří
+   core.async kanál a pumpuje do něj broadcastované eventy jako EDN." 
+  [_]
   (let [client-chan (async/chan 10)
         out (java.io.PipedOutputStream.)
         in (java.io.PipedInputStream. out)
-        writer (java.io.OutputStreamWriter. out "UTF-8")]
+        writer (OutputStreamWriter. out "UTF-8")]
     
     (swap! sse-clients conj client-chan)
     (log/info "SSE client connected. Total clients:" (count @sse-clients))
@@ -141,13 +160,18 @@
      :body in}))
 
 ;; Broadcast to all SSE clients
-(defn broadcast! [event]
+(defn broadcast!
+  "Pošle event všem připojeným SSE klientům (best-effort)."
+  [event]
   (log/debug "Broadcasting to" (count @sse-clients) "clients:" event)
   (doseq [client @sse-clients]
     (async/put! client event)))
 
 ;; Setup transaction listener
-(defn setup-tx-listener! [conn]
+(defn setup-tx-listener!
+  "Zaregistruje Datalevin listener, který při změně :counter/value
+   broadcastuje SSE event s aktuálními datomy." 
+  [conn]
   (d/listen! conn :sse-broadcast
     (fn [tx-report]
       (let [tx-data (:tx-data tx-report)
@@ -178,7 +202,9 @@
   (ring/ring-handler app-routes (ring/create-default-handler)))
 
 ;; Hlavní funkce
-(defn -main []
+(defn -main
+  "Spustí HTTP server (Jetty), inicializuje Datalevin a SSE broadcast." 
+  []
   (log/info "Initializing Datalevin database...")
   (reset! conn-atom (init-db!))
   

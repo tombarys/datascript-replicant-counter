@@ -4,10 +4,10 @@
             [cljs.reader]
             [counter.core-sse :as sse]))
 
-;; Schema definuje strukturu dat v DataScript DB
+;; Schema definuje strukturu dat v DataScript DB.
 (def schema {:counter/id {:db/unique :db.unique/identity}})
 
-;; Globální DataScript connection - in-memory databáze
+;; Globální DataScript connection - in-memory databáze.
 (defonce conn (d/create-conn schema))
 
 (defn set-loading!
@@ -97,7 +97,7 @@
    [:p {:style {:color "#666"}} "Frontend: Replicant + DataScript + SSE 🔄"]
    (render-counter db)])
 
-;; Renderer atom - Replicant virtual DOM state
+;; Renderer atom - drží Replicant virtual DOM state (pro efektivní re-render).
 (defonce renderer (atom nil))
 
 (defn render!
