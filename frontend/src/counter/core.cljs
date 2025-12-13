@@ -1,7 +1,8 @@
 (ns counter.core
   (:require [datascript.core :as d]
             [replicant.dom :as r]
-            [cljs.reader]))
+            [cljs.reader]
+            [counter.core-sse :as sse]))
 
 ;; Schema definuje strukturu dat v DataScript DB
 (def schema {:counter/id {:db/unique :db.unique/identity}})
@@ -9,12 +10,12 @@
 ;; Globální DataScript connection - in-memory databáze
 (defonce conn (d/create-conn schema))
 
-(defn set-loading! 
+(defn set-loading!
   "Nastaví loading stav v DataScript DB."
   [loading]
   (d/transact! conn [{:counter/id :main-counter :counter/loading loading}]))
 
-(defn sync-datoms! 
+(defn sync-datoms!
   "Synchronizuje datomy z backendu do lokální DataScript DB.
    Přijímá kolekci [attr value] párů a aplikuje je jako transakce."
   [datoms]
@@ -22,7 +23,7 @@
     (when (#{:counter/value :counter/loading} attr)
       (d/transact! conn [{:counter/id :main-counter attr value}]))))
 
-(defn fetch-counter! 
+(defn fetch-counter!
   "Načte aktuální stav counteru z backendu (HTTP GET).
    Parsuje EDN response a synchronizuje do DataScript."
   []
@@ -36,7 +37,7 @@
                  (set-loading! false))))
       (.catch #(do (js/console.error "Fetch error:" %) (set-loading! false)))))
 
-(defn update-counter! 
+(defn update-counter!
   "Pošle akci (:increment/:decrement/:reset) na backend (HTTP POST).
    Backend vrací nové datomy, které se synchronizují do DataScript."
   [action]
@@ -53,35 +54,6 @@
                  (set-loading! false))))
       (.catch #(do (js/console.error "Update error:" %) (set-loading! false)))))
 
-;; Polling interval atom - drží referenci na setInterval
-(defonce poll-interval (atom nil))
-
-(defn start-polling! 
-  "Spustí automatické polling backendu každých 5 sekund.
-   Zajišťuje real-time sync mezi více klienty."
-  []
-  (when @poll-interval
-    (js/clearInterval @poll-interval))
-  (js/console.log "🔄 Starting polling (5s interval)...")
-  (reset! poll-interval
-    (js/setInterval
-      (fn []
-        (-> (js/fetch "/api/counter")
-            (.then #(.text %))
-            (.then (fn [edn-str]
-                     (let [data (cljs.reader/read-string edn-str)
-                           datoms (:datoms data)]
-                       (sync-datoms! datoms))))
-            (.catch #(js/console.error "Poll error:" %))))
-      5000)))
-
-(defn stop-polling! 
-  "Zastaví automatické polling. Volá se při cleanup."
-  []
-  (when @poll-interval
-    (js/clearInterval @poll-interval)
-    (reset! poll-interval nil)))
-
 ;; Replicant event dispatcher - mapuje DOM events na akce
 (r/set-dispatch!
  (fn [event-data handler-data]
@@ -92,43 +64,43 @@
        :reset (update-counter! :reset)
        (js/console.warn "Unknown action:" handler-data)))))
 
-(defn query-counter 
+(defn query-counter
   "Datalog query - získá hodnotu a loading stav z DataScript DB."
   [db]
   (d/q '[:find ?value ?loading
          :in $ ?id
-         :where 
+         :where
          [?e :counter/id ?id]
          [?e :counter/value ?value]
          [?e :counter/loading ?loading]]
        db :main-counter))
 
-(defn render-counter 
+(defn render-counter
   "Renderuje counter UI komponentu (Hiccup syntax).
    Čte data z DB pomocí datalog query."
   [db]
   (let [result (query-counter db)
         [value loading] (first result)]
     [:div.counter
-     [:h2 "DataScript rules"]
+     [:h2 "DataScript + SSE real-time"]
      [:div.counter-value (if loading "..." value)]
      [:div.counter-controls
       [:button {:on {:click [:decrement]} :disabled loading} "-"]
       [:button {:on {:click [:increment]} :disabled loading} "+"]
       [:button {:on {:click [:reset]} :disabled loading} "Reset"]]]))
 
-(defn render-app 
+(defn render-app
   "Root komponenta - renderuje celou aplikaci."
   [db]
   [:div
    [:h1 "📮 Inkrementátor"]
-   [:p {:style {:color "#666"}} "Frontend: Replicant + DataScript + Auto-sync 🔄"]
+   [:p {:style {:color "#666"}} "Frontend: Replicant + DataScript + SSE 🔄"]
    (render-counter db)])
 
 ;; Renderer atom - Replicant virtual DOM state
 (defonce renderer (atom nil))
 
-(defn render! 
+(defn render!
   "Vyvolá Replicant re-render. Volá se při každé změně DataScript DB."
   []
   (when-let [el (js/document.getElementById "app")]
@@ -137,28 +109,28 @@
 ;; DataScript listener - automaticky volá render! při každé transakci
 (d/listen! conn :render (fn [_] (render!)))
 
-(defn ^:export init 
+(defn ^:export init
   "Inicializace aplikace - volá se při načtení stránky.
-   Načte data, spustí polling a provede první render."
+   Načte data, spustí SSE stream a provede první render."
   []
-  (js/console.log "🚀 Counter app with Replicant + DataScript + Auto-sync")
+  (js/console.log "🚀 Counter app with Replicant + DataScript + SSE")
   (fetch-counter!)
-  (start-polling!)
+  (sse/start-event-stream! sync-datoms!)
   (render!))
 
-(defn ^:export stop 
-  "Cleanup funkce - zastaví polling. Volá se při unmount."
+(defn ^:export stop
+  "Cleanup funkce - zastaví SSE. Volá se při unmount."
   []
-  (js/console.log "🛑 Stopping auto-sync")
-  (stop-polling!))
+  (js/console.log "🛑 Stopping SSE")
+  (sse/stop-event-stream!))
 
-(defn ^:dev/before-load stop-before-reload 
+(defn ^:dev/before-load stop-before-reload
   "Shadow-cljs lifecycle hook - volá se před hot reload."
   []
-  (stop-polling!))
+  (sse/stop-event-stream!))
 
-(defn ^:dev/after-load start-after-reload 
+(defn ^:dev/after-load start-after-reload
   "Shadow-cljs lifecycle hook - volá se po hot reload."
   []
-  (start-polling!)
+  (sse/start-event-stream! sync-datoms!)
   (render!))
