@@ -85,9 +85,10 @@ Branch: `datalevin-backend`
     (js/setInterval fetch-counter! 5000)))
 
 ;; SSE (nové)
-(require '[counter.core-sse :as sse])
+(require '[counter.core-sse :as sse]
+         '[counter.sync :as sync])
 (defn init []
-  (sse/start-event-stream! sync-datoms!))
+  (sse/start-event-stream! #(sync/apply-server-message! conn %)))
 ```
 
 ## 🚀 Deployment

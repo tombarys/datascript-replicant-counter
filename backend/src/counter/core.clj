@@ -55,25 +55,38 @@
              "Access-Control-Allow-Headers" "Content-Type"}
    :body (pr-str data)})
 
-(defn get-counter-datoms
-  "Vrátí všechny datomy (v podobě [attr value]) pro entitu :main-counter.
+(defn pull-counter
+  "Vrátí mapu entity `:counter/id :main-counter` z dodané databáze.
    Pokud entita neexistuje, vrací nil."
-  []
-  (let [db (d/db @conn-atom)
-        eid (d/q '[:find ?e .
-                   :where [?e :counter/id :main-counter]]
-                 db)]
-    (when eid
-      (d/q '[:find ?a ?v
-             :in $ ?e
-             :where [?e ?a ?v]]
-           db eid))))
+  [db]
+  (d/pull db '[*] [:counter/id :main-counter]))
+
+(defn counter-tx
+  "Vrátí DataScript/Datalevin transakci popisující aktuální stav counteru.
+   Výsledkem je vektor map, který může frontend rovnou `(d/transact!)`."
+  [db]
+  (if-let [entity (pull-counter db)]
+    [(select-keys entity [:counter/id :counter/value])]
+    []))
+
+(defn counter-message
+  "Zabalí současný stav counteru do mapy `{:type :tx :tx [...] :meta {...}}`.
+   `meta` dovoluje přidat info o původu zprávy (HTTP, SSE listener, ...)."
+  ([db]
+   (counter-message db {:source :api
+                        :timestamp (System/currentTimeMillis)}))
+  ([db meta]
+   {:type :tx
+    :tx   (counter-tx db)
+    :meta meta}))
 
 ;; API Handlers - vrací EDN
 (defn get-counter
-  "GET /api/counter - vrátí aktuální stav counteru jako EDN (datomy)."
+  "GET /api/counter - vrátí aktuální stav counteru zabalený jako `{:tx [...]}`."
   [_]
-  (edn-response {:datoms (get-counter-datoms)}))
+  (let [db (d/db @conn-atom)]
+    (edn-response (counter-message db {:source :http/get
+                                       :timestamp (System/currentTimeMillis)}))))
 
 (defn update-counter
   "POST /api/counter - přijme EDN keyword operaci (:increment/:decrement/:reset),
@@ -96,8 +109,11 @@
     (d/transact! @conn-atom [{:counter/id :main-counter
                              :counter/value new-value}])
     
-    ;; Vrať nové datomy
-    (edn-response {:datoms (get-counter-datoms)})))
+    ;; Vrať novou transakci
+    (let [updated-db (d/db @conn-atom)]
+      (edn-response (counter-message updated-db {:source :http/post
+                                                 :operation operation
+                                                 :timestamp (System/currentTimeMillis)})))))
 
 ;; CORS preflight
 (defn options-handler
@@ -123,7 +139,11 @@
   (let [body (slurp (:body request))
         value (read-string body)]
     (d/transact! @conn-atom [{:counter/id :main-counter :counter/value value}])
-    (edn-response {:success true :new-value value :datoms (get-counter-datoms)})))
+    (let [db (d/db @conn-atom)]
+      (edn-response {:success true
+                     :new-value value
+                     :message (counter-message db {:source :debug/set
+                                                    :timestamp (System/currentTimeMillis)})}))))
 
 ;; SSE Handler with piped output stream
 (defn sse-handler
@@ -169,8 +189,8 @@
 
 ;; Setup transaction listener
 (defn setup-tx-listener!
-  "Zaregistruje Datalevin listener, který při změně :counter/value
-   broadcastuje SSE event s aktuálními datomy." 
+  "Zaregistruje Datalevin listener, který při změně `:counter/value`
+   odešle SSE zprávu `{:tx [...]}` všem klientům."
   [conn]
   (d/listen! conn :sse-broadcast
     (fn [tx-report]
@@ -178,12 +198,11 @@
             counter-changes (filter #(= :counter/value (:a %)) tx-data)]
         (when (seq counter-changes)
           (let [new-value (:v (first counter-changes))
-                datoms (get-counter-datoms)]
+                message (counter-message (:db-after tx-report)
+                                         {:source :tx-listener
+                                          :timestamp (System/currentTimeMillis)})]
             (log/info "Counter changed to:" new-value)
-            (broadcast! {:type :counter-update
-                        :value new-value
-                        :datoms datoms
-                        :timestamp (System/currentTimeMillis)})))))))
+            (broadcast! message)))))))
 
 ;; Router
 (def app-routes

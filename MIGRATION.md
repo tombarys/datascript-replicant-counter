@@ -29,15 +29,18 @@
 
 ### Transport (EDN):
 ```clojure
-{:datoms #{[:counter/value 4]}}  ; NE JSON!
+{:type :tx                 ; typ zprávy
+ :tx   [{:counter/id :main-counter
+    :counter/value 4}] ; DataScript transakce
+ :meta {:source :http/get}}
 ```
-- **Proč EDN?** Zachovává Clojure typy (keywords, sets, atd.)
-- **Výhoda**: Žádný type conversion overhead
+- **Proč EDN?** Zachovává Clojure typy (keywords, sets, mapy, atd.)
+- **Výhoda**: Žádný JSON konverzní overhead
 
 ### Frontend (DataScript):
 1. HTTP GET `/api/counter` → EDN string
 2. `cljs.reader/read-string` → parsování
-3. `sync-datoms!` → transakce do DataScript
+3. `counter.sync/apply-server-message!` → `(d/transact! conn tx)`
 4. DataScript listener → Replicant re-render
 
 ## 🚀 Jak to použít:

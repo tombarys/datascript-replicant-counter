@@ -1,58 +1,56 @@
 (ns counter.core
   (:require [datascript.core :as d]
             [replicant.dom :as r]
-            [cljs.reader]
+            [counter.api :as api]
+            [counter.sync :as sync]
             [counter.core-sse :as sse]))
 
 ;; Schema definuje strukturu dat v DataScript DB.
 (def schema {:counter/id {:db/unique :db.unique/identity}})
 
-;; Globální DataScript connection - in-memory databáze.
+;; Celkový tok dat (pro orientaci):
+;; 1. UI vyvolá akci (klik) -> `update-counter!` -> HTTP POST na backend.
+;; 2. Backend odpoví mapou `{:tx [...]}` -> `apply-message!` -> `d/transact!`.
+;; 3. SSE (server push) posílá stejné mapy -> také končí v `apply-message!`.
+;; 4. DataScript listener `render!` přemaluje UI.
+
+;; Globální DataScript connection - jedna in-memory DB pro celý frontend.
 (defonce conn (d/create-conn schema))
 
-(defn set-loading!
-  "Nastaví loading stav v DataScript DB."
-  [loading]
-  (d/transact! conn [{:counter/id :main-counter :counter/loading loading}]))
-
-(defn sync-datoms!
-  "Synchronizuje datomy z backendu do lokální DataScript DB.
-   Přijímá kolekci [attr value] párů a aplikuje je jako transakce."
-  [datoms]
-  (doseq [[attr value] datoms]
-    (when (#{:counter/value :counter/loading} attr)
-      (d/transact! conn [{:counter/id :main-counter attr value}]))))
+(defn- apply-message!
+  "Helper: vezme mapu ze serveru a pošle ji do `counter.sync`.
+   Díky tomu máme na jednom místě, že *každá* odpověď má mít klíč `:tx`."
+  [message]
+  (sync/apply-server-message! conn message))
 
 (defn fetch-counter!
   "Načte aktuální stav counteru z backendu (HTTP GET).
-   Parsuje EDN response a synchronizuje do DataScript."
+   Backend vrací mapu `{:tx [...]}` – DataScript transakci.
+   Tu aplikujeme do lokální DB a vypneme loading stav."
   []
-  (set-loading! true)
-  (-> (js/fetch "/api/counter")
-      (.then #(.text %))
-      (.then (fn [edn-str]
-               (let [data (cljs.reader/read-string edn-str)
-                     datoms (:datoms data)]
-                 (sync-datoms! datoms)
-                 (set-loading! false))))
-      (.catch #(do (js/console.error "Fetch error:" %) (set-loading! false)))))
+  (sync/set-loading! conn true)
+  (api/fetch-edn! "/api/counter"
+                  {:on-ok (fn [message]
+                            (apply-message! message)
+                            (sync/set-loading! conn false))
+                   :on-err (fn [err]
+                             (js/console.error "Fetch error:" err)
+                             (sync/set-loading! conn false))}))
 
 (defn update-counter!
   "Pošle akci (:increment/:decrement/:reset) na backend (HTTP POST).
-   Backend vrací nové datomy, které se synchronizují do DataScript."
+   Backend vrací opět mapu `{:tx [...]}`."
   [action]
-  (set-loading! true)
-  (-> (js/fetch "/api/counter"
-                #js {:method "POST"
-                     :headers #js {"Content-Type" "application/edn"}
-                     :body (pr-str action)})
-      (.then #(.text %))
-      (.then (fn [edn-str]
-               (let [data (cljs.reader/read-string edn-str)
-                     datoms (:datoms data)]
-                 (sync-datoms! datoms)
-                 (set-loading! false))))
-      (.catch #(do (js/console.error "Update error:" %) (set-loading! false)))))
+  (sync/set-loading! conn true)
+  (api/fetch-edn! "/api/counter"
+                  {:method "POST"
+                   :body action
+                   :on-ok (fn [message]
+                            (apply-message! message)
+                            (sync/set-loading! conn false))
+                   :on-err (fn [err]
+                             (js/console.error "Update error:" err)
+                             (sync/set-loading! conn false))}))
 
 ;; Replicant event dispatcher - mapuje DOM events na akce
 (r/set-dispatch!
@@ -79,15 +77,16 @@
   "Renderuje counter UI komponentu (Hiccup syntax).
    Čte data z DB pomocí datalog query."
   [db]
-  (let [result (query-counter db)
-        [value loading] (first result)]
+  (let [[value loading] (or (first (query-counter db))
+                            [0 false])
+        loading? (boolean loading)]
     [:div.counter
      [:h2 "DataScript + SSE real-time"]
-     [:div.counter-value (if loading "..." value)]
+     [:div.counter-value (if loading? "..." value)]
      [:div.counter-controls
-      [:button {:on {:click [:decrement]} :disabled loading} "-"]
-      [:button {:on {:click [:increment]} :disabled loading} "+"]
-      [:button {:on {:click [:reset]} :disabled loading} "Reset"]]]))
+      [:button {:on {:click [:decrement]} :disabled loading?} "-"]
+      [:button {:on {:click [:increment]} :disabled loading?} "+"]
+      [:button {:on {:click [:reset]} :disabled loading?} "Reset"]]]))
 
 (defn render-app
   "Root komponenta - renderuje celou aplikaci."
@@ -111,11 +110,14 @@
 
 (defn ^:export init
   "Inicializace aplikace - volá se při načtení stránky.
-   Načte data, spustí SSE stream a provede první render."
+   1. označí UI jako `loading`
+   2. přes HTTP natáhne aktuální stav (přijde jako `{:tx [...]}` a uloží se do DB)
+   3. nastartuje SSE stream (pro další změny)
+   4. provede první render."
   []
   (js/console.log "🚀 Counter app with Replicant + DataScript + SSE")
   (fetch-counter!)
-  (sse/start-event-stream! sync-datoms!)
+  (sse/start-event-stream! apply-message!)
   (render!))
 
 (defn ^:export stop
@@ -132,5 +134,5 @@
 (defn ^:dev/after-load start-after-reload
   "Shadow-cljs lifecycle hook - volá se po hot reload."
   []
-  (sse/start-event-stream! sync-datoms!)
+  (sse/start-event-stream! apply-message!)
   (render!))

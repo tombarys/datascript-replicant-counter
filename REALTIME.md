@@ -43,97 +43,40 @@
 - Komplexní setup
 - Overkill pro malé projekty
 
-## Implementace: SSE + Datahike Listeners
+## Implementace: SSE + Datalevin (aktuální)
 
-### Backend změny
+V této codebase je SSE už hotové a integrované:
 
-Přidej SSE endpoint a transaction listener:
+### Backend
 
-```clojure
-(ns counter.core
-  (:require [ring.adapter.jetty :as jetty]
-            [datahike.api :as d]
-            [clojure.core.async :as async]))
+- Implementace je v `backend/src/counter/core.clj`:
+  - `GET /api/events` (`sse-handler`) drží otevřený stream
+  - `setup-tx-listener!` při každé změně `:counter/value` pošle zprávu `{:tx [...]}`
+  - server posílá EDN mapu jako `data: <edn>\n\n` (primárně s klíčem `:tx`)
 
-;; Channel pro broadcasting změn
-(defonce broadcast-chan (async/chan (async/sliding-buffer 100)))
+### Frontend
 
-;; Listener na Datahike transakce
-(defn setup-transaction-listener! [conn]
-  (d/listen! conn :broadcast
-    (fn [{:keys [tx-data]}]
-      (let [counter-changes (filter #(= :counter/value (:a %)) tx-data)]
-        (when (seq counter-changes)
-          (let [new-value (-> counter-changes first :v)]
-            (async/put! broadcast-chan {:counter/value new-value
-                                        :timestamp (System/currentTimeMillis)})))))))
-
-;; SSE endpoint
-(defn sse-handler [request]
-  {:status 200
-   :headers {"Content-Type" "text/event-stream"
-             "Cache-Control" "no-cache"
-             "Connection" "keep-alive"
-             "Access-Control-Allow-Origin" "*"}
-   :body (async/go-loop []
-           (when-let [event (async/<! broadcast-chan)]
-             (async/>! (:async-channel request)
-                      (str "data: " (pr-str event) "\n\n"))
-             (recur)))})
-
-;; Router s SSE
-(def app-routes
-  (ring/router
-   ["/api"
-    ["/counter" {:get get-counter
-                 :post update-counter}]
-    ["/events" {:get sse-handler}]]))
-```
-
-### Frontend změny
-
-Subscribe na SSE stream:
+- Klient je v `frontend/src/counter/core_sse.cljs` (wrapper nad `EventSource`).
+- `frontend/src/counter/api.cljs` obstarává HTTP požadavky → EDN.
+- `frontend/src/counter/sync.cljs` překládá zprávy (`{:tx [...]}`) na `(d/transact!)`.
+- V `frontend/src/counter/core.cljs` se připojení spouští v `init`:
 
 ```clojure
-(ns counter.core
-  (:require [datascript.core :as d]
-            [replicant.dom :as r]
-            [cljs.reader]))
-
-;; SSE connection
-(defonce event-source (atom nil))
-
-(defn start-event-stream! []
-  (when @event-source
-    (.close @event-source))
-  
-  (let [source (js/EventSource. "/api/events")]
-    (reset! event-source source)
-    
-    (.addEventListener source "message"
-      (fn [event]
-        (let [data (cljs.reader/read-string (.-data event))
-              value (:counter/value data)]
-          (js/console.log "SSE update:" value)
-          (d/transact! conn [{:counter/id :main-counter 
-                              :counter/value value}]))))
-    
-    (.addEventListener source "error"
-      (fn [e]
-        (js/console.error "SSE error:" e)
-        ;; Auto-reconnect po 3s
-        (js/setTimeout #(start-event-stream!) 3000)))))
+(defn apply-message! [message]
+  (sync/apply-server-message! conn message))
 
 (defn ^:export init []
-  (js/console.log "Starting counter with real-time sync")
-  (fetch-counter!)  ; Initial load
-  (start-event-stream!)  ; Subscribe
+  (fetch-counter!) ; HTTP GET -> {:tx [...]}
+  (sse/start-event-stream! apply-message!) ; přihlášení k push zprávám
   (render!))
 ```
 
 ## Alternativa: Polling s exponential backoff
 
 Jednodušší varianta bez SSE:
+
+> Pozn.: Příklad předpokládá `(:require [counter.api :as api]
+>                                [counter.sync :as sync])` a dostupné `conn`.
 
 ```clojure
 (defonce poll-interval (atom nil))
@@ -145,12 +88,9 @@ Jednodušší varianta bez SSE:
   (reset! poll-interval
     (js/setInterval
       (fn []
-        (-> (js/fetch "/api/counter")
-            (.then #(.text %))
-            (.then (fn [edn-str]
-                     (let [data (cljs.reader/read-string edn-str)
-                           datoms (:datoms data)]
-                       (sync-datoms! datoms))))))
+        (api/fetch-edn! "/api/counter"
+                        {:on-ok #(sync/apply-server-message! conn %)
+                         :on-err #(js/console.error "Polling error" %)}))
       5000))) ;; Poll každých 5s
 ```
 
@@ -185,8 +125,8 @@ Pro full-duplex komunikaci:
 ;; V transaction listeneru:
 (d/listen! conn :ws-broadcast
   (fn [{:keys [tx-data]}]
-    (broadcast-to-all! {:type :counter-update
-                        :datoms tx-data})))
+    (broadcast-to-all! {:type :tx
+                        :tx   tx-data})))
 ```
 
 ### Frontend (WebSocket)
@@ -201,8 +141,8 @@ Pro full-duplex komunikaci:
     (set! (.-onmessage socket)
       (fn [event]
         (let [data (cljs.reader/read-string (.-data event))]
-          (when (= :counter-update (:type data))
-            (sync-datoms! (:datoms data))))))
+          (when (= :tx (:type data))
+            (sync/apply-server-message! conn data))))))
     
     (set! (.-onopen socket)
       (fn [] (js/console.log "WebSocket connected")))
@@ -259,7 +199,7 @@ Pro full-duplex komunikaci:
 (d/listen! conn :sente-broadcast
   (fn [{:keys [tx-data]}]
     (doseq [uid (:any @connected-uids)]
-      (chsk-send! uid [:counter/update {:datoms tx-data}]))))
+      (chsk-send! uid [:counter/update {:type :tx :tx tx-data}]))))
 
 ;; Frontend
 (require '[taoensso.sente :as sente])
@@ -275,7 +215,7 @@ Pro full-duplex komunikaci:
 
 (defmethod event-handler :counter/update
   [{:keys [?data]}]
-  (sync-datoms! (:datoms ?data)))
+  (sync/apply-server-message! conn ?data))
 
 (sente/start-client-chsk-router! ch-chsk event-handler)
 ```
