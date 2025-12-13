@@ -52,15 +52,6 @@
                              (js/console.error "Update error:" err)
                              (sync/set-loading! conn false))}))
 
-;; Replicant event dispatcher - mapuje DOM events na akce
-(r/set-dispatch!
- (fn [event-data handler-data]
-   (when (= :replicant.trigger/dom-event (:replicant/trigger event-data))
-     (case (first handler-data)
-       :increment (update-counter! :increment)
-       :decrement (update-counter! :decrement)
-       :reset (update-counter! :reset)
-       (js/console.warn "Unknown action:" handler-data)))))
 
 (defn query-counter
   "Datalog query - získá hodnotu a loading stav z DataScript DB."
@@ -105,9 +96,6 @@
   (when-let [el (js/document.getElementById "app")]
     (reset! renderer (r/render el (render-app @conn) @renderer))))
 
-;; DataScript listener - automaticky volá render! při každé transakci
-(d/listen! conn :render (fn [_] (render!)))
-
 (defn ^:export init
   "Inicializace aplikace - volá se při načtení stránky.
    1. označí UI jako `loading`
@@ -136,3 +124,18 @@
   []
   (sse/start-event-stream! apply-message!)
   (render!))
+
+;; Replicant event dispatcher - mapuje DOM events na akce
+
+(r/set-dispatch!
+ (fn [event-data handler-data]
+   (when (= :replicant.trigger/dom-event (:replicant/trigger event-data))
+     (case (first handler-data)
+       :increment (update-counter! :increment)
+       :decrement (update-counter! :decrement)
+       :reset (update-counter! :reset)
+       (js/console.warn "Unknown action:" handler-data)))))
+
+;; DataScript listener - automaticky volá render! při každé transakci
+
+(d/listen! conn :render (fn [_] (render!)))
