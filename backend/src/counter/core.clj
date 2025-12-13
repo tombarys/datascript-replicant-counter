@@ -1,11 +1,10 @@
 (ns counter.core
-  (:require [ring.adapter.jetty :as jetty]
+  (:require [org.httpkit.server :as http-kit]
             [reitit.ring :as ring]
             [ring.middleware.defaults :refer [wrap-defaults api-defaults]]
             [clojure.tools.logging :as log]
             [clojure.core.async :as async]
             [datalevin.core :as d])
-  (:import [java.io OutputStreamWriter])
   (:gen-class))
 
 ;; Konfigurace Datalevin - jen cesta k databázi.
@@ -145,39 +144,39 @@
                      :message (counter-message db {:source :debug/set
                                                     :timestamp (System/currentTimeMillis)})}))))
 
-;; SSE Handler with piped output stream
 (defn sse-handler
-  "GET /api/events - Server-Sent Events stream. Pro každého klienta vytvoří
-   core.async kanál a pumpuje do něj broadcastované eventy jako EDN." 
-  [_]
-  (let [client-chan (async/chan 10)
-        out (java.io.PipedOutputStream.)
-        in (java.io.PipedInputStream. out)
-        writer (OutputStreamWriter. out "UTF-8")]
-    
-    (swap! sse-clients conj client-chan)
-    (log/info "SSE client connected. Total clients:" (count @sse-clients))
-    
-    ;; Background thread to write events
-    (async/thread
-      (try
-        (while true
-          (when-let [event (async/<!! client-chan)]
-            (.write writer (str "data: " (pr-str event) "\n\n"))
-            (.flush writer)))
-        (catch Exception e
-          (log/warn "SSE write error:" (.getMessage e))
-          (swap! sse-clients disj client-chan)
-          (async/close! client-chan)
-          (.close writer))))
-    
-    {:status 200
-     :headers {"Content-Type" "text/event-stream;charset=UTF-8"
-               "Cache-Control" "no-cache, no-store, must-revalidate"
-               "Connection" "keep-alive"
-               "X-Accel-Buffering" "no"
-               "Access-Control-Allow-Origin" "*"}
-     :body in}))
+  "GET /api/events - Server-Sent Events stream pomocí http-kit async."
+  [request]
+  (http-kit/with-channel request channel
+    (let [client-chan (async/chan 10)]
+      
+      (swap! sse-clients conj client-chan)
+      (log/info "SSE client connected. Total clients:" (count @sse-clients))
+      
+      ;; Send SSE headers with retry comment as initial data
+      (http-kit/send! channel
+                      {:status 200
+                       :headers {"Content-Type" "text/event-stream"
+                                 "Cache-Control" "no-cache"
+                                 "Connection" "keep-alive"
+                                 "X-Accel-Buffering" "no"
+                                 "Access-Control-Allow-Origin" "*"}
+                       :body ": connected\n\n"}
+                      false)
+      
+      ;; Background loop to forward events
+      (async/go-loop []
+        (when-let [event (async/<! client-chan)]
+          (when (http-kit/open? channel)
+            (http-kit/send! channel (str "data: " (pr-str event) "\n\n") false)
+            (recur))))
+      
+      ;; Cleanup on close
+      (http-kit/on-close channel
+                         (fn [_]
+                           (log/info "SSE client disconnected. Total clients:" (dec (count @sse-clients)))
+                           (swap! sse-clients disj client-chan)
+                           (async/close! client-chan))))))
 
 ;; Broadcast to all SSE clients
 (defn broadcast!
@@ -231,8 +230,7 @@
   (setup-tx-listener! @conn-atom)
   
   (log/info "Starting Counter App Server on port 3000")
-  (jetty/run-jetty (wrap-defaults app api-defaults) 
-                   {:port 3000 
-                    :join? false})
+  (http-kit/run-server (wrap-defaults app api-defaults) 
+                       {:port 3000})
   
   (log/info "Server started successfully with SSE support"))
